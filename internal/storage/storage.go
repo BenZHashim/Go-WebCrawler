@@ -1,15 +1,22 @@
-package main
+package storage
 
 import (
 	"database/sql"
 	_ "github.com/jackc/pgx/v4/stdlib" // Import the driver
-	"go-crawler/models"
+	"go-crawler/pkg/models"
 	"log"
 	"time"
 )
 
-// storageWorker listens to a channel and writes data to the DB
-func batchedStorageWorker(db *sql.DB, dataChan <-chan models.PageData) {
+type Storage struct {
+	db *sql.DB
+}
+
+func NewStorage(db *sql.DB) *Storage {
+	return &Storage{db: db}
+}
+
+func (storage Storage) StartSaveWorker(dataChan <-chan models.PageData) {
 	const (
 		BatchSize    = 100             // Write when we have this many
 		BatchTimeout = 1 * time.Second // Or write when this much time passes
@@ -25,7 +32,7 @@ func batchedStorageWorker(db *sql.DB, dataChan <-chan models.PageData) {
 			return
 		}
 
-		err := saveBatch(db, buffer)
+		err := saveBatch(storage, buffer)
 		if err != nil {
 			log.Printf("Batch save failed: %v", err)
 			// In a real app, you might implement a retry mechanism here
@@ -62,8 +69,8 @@ func batchedStorageWorker(db *sql.DB, dataChan <-chan models.PageData) {
 	}
 }
 
-func saveBatch(db *sql.DB, batch []models.PageData) error {
-	tx, err := db.Begin()
+func saveBatch(storage Storage, batch []models.PageData) error {
+	tx, err := storage.db.Begin()
 	if err != nil {
 		return err
 	}

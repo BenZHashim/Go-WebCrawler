@@ -1,16 +1,18 @@
-package main
+package crawler
 
 import (
 	"fmt"
-	"go-crawler/models"
+	"go-crawler/internal"
+	"go-crawler/pkg/models"
 )
 
-func worker(
+func CrawlWorker(
 	id int,
 	worklist chan []string,
 	results chan<- models.PageData,
-	visited *SafeMap,
+	visited *internal.SafeMap,
 	domainMgr *DomainManager,
+	parserService *Parser,
 ) {
 	// Loop through the worklist channel
 	for list := range worklist {
@@ -28,7 +30,7 @@ func worker(
 
 			// 3. Crawl
 			fmt.Printf("[Worker %d] Crawling: %s\n", id, link)
-			data, err := parsePage(link)
+			data, err := parserService.Parse(link)
 			if err != nil {
 				fmt.Printf("[Worker %d] Error: %v\n", id, err)
 				continue
@@ -38,7 +40,7 @@ func worker(
 			results <- data
 
 			// 5. Add new links to queue
-			// Run in a separate goroutine to avoid blocking the worker if the queue is full
+			// Run in a separate goroutine to avoid blocking the CrawlWorker if the queue is full
 			fmt.Printf("Found %d links on %s. Queuing them...\n", len(data.OutboundLinks), link)
 			go func(links []string) {
 				worklist <- links

@@ -1,10 +1,14 @@
-package main
+package internal
 
 import "sync"
 
 type SafeMap struct {
 	mu sync.Mutex
 	v  map[string]bool
+}
+
+func NewSafeMap() *SafeMap {
+	return &SafeMap{v: make(map[string]bool)}
 }
 
 func (s *SafeMap) Contains(url string) bool {

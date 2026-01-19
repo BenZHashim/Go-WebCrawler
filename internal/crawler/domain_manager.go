@@ -1,4 +1,4 @@
-package main
+package crawler
 
 import (
 	"github.com/temoto/robotstxt"
@@ -14,6 +14,13 @@ type DomainManager struct {
 	mu          sync.Mutex
 	limiters    map[string]*rate.Limiter
 	robotsCache map[string]*robotstxt.Group
+}
+
+func NewDomainManager() *DomainManager {
+	return &DomainManager{
+		limiters:    make(map[string]*rate.Limiter),
+		robotsCache: make(map[string]*robotstxt.Group),
+	}
 }
 
 func (d *DomainManager) Wait(targetURL string) error {
