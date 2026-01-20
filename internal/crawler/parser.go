@@ -18,6 +18,22 @@ func NewParser(userAgent string) *Parser {
 	return &Parser{UserAgent: userAgent}
 }
 
+func (p *Parser) GetOutBoundLinks(targetURL string) ([]string, error) {
+
+	body, _, err := p.Fetch(targetURL)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	outBoundLinks, err := p.extractOutBoundLinks(body, targetURL)
+	if err != nil {
+		return nil, err
+	}
+
+	return outBoundLinks, nil
+}
+
 func (p *Parser) Parse(targetURL string) (models.PageData, error) {
 	// 1. Fetch the raw stream
 	start := time.Now()
@@ -59,6 +75,32 @@ func (p *Parser) Fetch(targetURL string) (io.ReadCloser, int, error) {
 	}
 
 	return resp.Body, resp.StatusCode, nil
+}
+
+func (p *Parser) extractOutBoundLinks(r io.Reader, baseURL string) ([]string, error) {
+	doc, err := html.Parse(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var links []string
+
+	var visit func(n *html.Node)
+	visit = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "a" {
+			for _, a := range n.Attr {
+				if a.Key == "href" {
+					absoluteURL := resolveURL(baseURL, a.Val)
+					if absoluteURL != "" {
+						links = append(links, absoluteURL)
+					}
+				}
+			}
+		}
+	}
+	visit(doc)
+
+	return links, nil
 }
 
 func (p *Parser) Extract(r io.Reader, baseURL string) (models.PageData, error) {

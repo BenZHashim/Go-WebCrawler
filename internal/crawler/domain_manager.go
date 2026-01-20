@@ -2,10 +2,12 @@ package crawler
 
 import (
 	"github.com/temoto/robotstxt"
+	"go-crawler/pkg/models"
 	"golang.org/x/net/context"
 	"golang.org/x/time/rate"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -37,7 +39,7 @@ func (d *DomainManager) Wait(targetURL string) error {
 		// Create a new limiter: 1 request every 2 seconds
 		// rate.Every(2 * time.Second) = interval
 		// 1 = burst size (allow 1 request immediately, then wait)
-		limiter = rate.NewLimiter(rate.Every(2*time.Second), 1)
+		limiter = rate.NewLimiter(rate.Every(8*time.Second), 1)
 		d.limiters[domain] = limiter
 	}
 	d.mu.Unlock()
@@ -81,4 +83,16 @@ func (d *DomainManager) IsAllowed(link string) bool {
 		return true // No robots.txt or parse error = Allowed
 	}
 	return group.Test(u.Path)
+}
+
+func getDomain(url string) models.DataSource {
+	if strings.Contains(url, "amazon.com") {
+		return models.Amazon
+	}
+	if strings.Contains(url, "newegg.com") {
+		return models.Newegg
+	}
+
+	return models.None
+
 }

@@ -16,35 +16,32 @@ func NewStorage(db *sql.DB) *Storage {
 	return &Storage{db: db}
 }
 
-func (storage Storage) StartSaveWorker(dataChan <-chan models.PageData) {
-	const (
-		BatchSize    = 100             // Write when we have this many
-		BatchTimeout = 1 * time.Second // Or write when this much time passes
-	)
+func startSaveWorker[T any](
+	dataChan <-chan T,
+	batchSize int,
+	batchTimeout time.Duration,
+	storage Storage,
+	saveFunc func(Storage, []T) error) {
 
-	buffer := make([]models.PageData, 0, BatchSize)
-	ticker := time.NewTicker(BatchTimeout)
+	buffer := make([]T, 0, batchSize)
+	ticker := time.NewTicker(batchTimeout)
 	defer ticker.Stop()
 
-	// Define the save logic as a helper function to avoid code duplication
 	flush := func() {
 		if len(buffer) == 0 {
 			return
 		}
 
-		err := saveBatch(storage, buffer)
+		err := saveFunc(storage, buffer)
 		if err != nil {
 			log.Printf("Batch save failed: %v", err)
 			// In a real app, you might implement a retry mechanism here
 		} else {
-			log.Printf("Saved batch of %d pages", len(buffer))
+			log.Printf("Saved batch of size %d", len(buffer))
 		}
-
-		// Reset the buffer (keep capacity to avoid reallocation)
 		buffer = buffer[:0]
 	}
 
-	// The Main Event Loop
 	for {
 		select {
 		case data, ok := <-dataChan:
@@ -58,7 +55,7 @@ func (storage Storage) StartSaveWorker(dataChan <-chan models.PageData) {
 			buffer = append(buffer, data)
 
 			// Trigger write if buffer is full
-			if len(buffer) >= BatchSize {
+			if len(buffer) >= batchSize {
 				flush()
 			}
 
@@ -69,7 +66,40 @@ func (storage Storage) StartSaveWorker(dataChan <-chan models.PageData) {
 	}
 }
 
-func saveBatch(storage Storage, batch []models.PageData) error {
+func (storage Storage) StartPageWorker(dataChan <-chan models.PageData) {
+	const (
+		BatchSize    = 100
+		BatchTimeout = 1 * time.Second
+	)
+	go startSaveWorker(dataChan, BatchSize, BatchTimeout, storage, savePageBatch)
+}
+
+func (storage Storage) StartProductQueueWorker(dataChan <-chan models.URLQueue) {
+
+	saveToProductQueue := func(storage Storage, batch []models.URLQueue) error {
+		tx, err := storage.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		stmt, _ := tx.Prepare(`
+                INSERT INTO product_queue (url, domain, status) 
+                VALUES ($1, $2, 'pending') 
+                ON CONFLICT (url) DO NOTHING`)
+
+		defer stmt.Close()
+
+		for _, url := range batch {
+			stmt.Exec(url.URL, url.Domain, "pending")
+		}
+		return tx.Commit()
+	}
+
+	go startSaveWorker(dataChan, 10, 1*time.Second, storage, saveToProductQueue)
+}
+
+func savePageBatch(storage Storage, batch []models.PageData) error {
 	tx, err := storage.db.Begin()
 	if err != nil {
 		return err

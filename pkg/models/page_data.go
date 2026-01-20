@@ -10,3 +10,15 @@ type PageData struct {
 	LoadTime      time.Duration
 	OutboundLinks []string
 }
+
+type URLQueue struct {
+	URL    string
+	Domain string
+}
+
+type Product struct {
+	Name        string
+	Price       int
+	ModelNumber string
+	Source      string
+}

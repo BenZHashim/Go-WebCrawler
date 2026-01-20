@@ -20,7 +20,7 @@ import (
 
 func main() {
 
-	defaultURL := "https://en.wikipedia.org/wiki/Main_Page"
+	defaultURL := "https://www.newegg.com/p/pl?d=corsair"
 	defaultWorkers := 10
 
 	// 2. Parse Flags (allows running: ./crawler -url="https://google.com" -workers=50)
@@ -34,20 +34,23 @@ func main() {
 	defer db.Close()
 
 	// 3. Initialize Channels and State
-	worklist := make(chan []string)            // Queue of links to process
-	results := make(chan models.PageData, 100) // Data ready to be saved
+	worklist := make(chan []string) // Queue of links to process
+	//pageResults := make(chan models.PageData, 100) // Data ready to be saved
+	queueResults := make(chan models.URLQueue, 100)
 	visited := internal.NewSafeMap()
 
 	domainManager := crawler.NewDomainManager()
 
 	storageWorker := storage.NewStorage(db)
-	go storageWorker.StartSaveWorker(results)
+	//go storageWorker.StartPageWorker(pageResults)
+	go storageWorker.StartProductQueueWorker(queueResults)
 
 	parserService := crawler.NewParser("MyPortfolioCrawler/1.0 (benjaminzhashim@gmail.com)")
 
 	for i := 0; i < *numWorkers; i++ {
 		// We just call the named function now
-		go crawler.CrawlWorker(i, worklist, results, visited, domainManager, parserService)
+		//go crawler.PageCrawlWorker(i, worklist, pageResults, visited, domainManager, parserService)
+		go crawler.StartScoutCrawler(i, worklist, queueResults, visited, domainManager, parserService)
 	}
 
 	fmt.Println("Starting Crawler...")
