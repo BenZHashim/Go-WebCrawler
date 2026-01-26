@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"github.com/chromedp/chromedp"
 	"go-crawler/internal/crawler"
 	"go-crawler/internal/crawler/engine"
 	"go-crawler/internal/storage"
@@ -28,8 +29,21 @@ func main() {
 	defer db.Close()
 
 	store := storage.NewStorage(db)
-	parser := crawler.NewParser("MyPageCrawler/1.0")
 	domainMgr := crawler.NewDomainManager(2 * time.Second)
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("excludeSwitches", "enable-automation"),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+	)
+
+	// 'allocCtx' is the handle to the browser process.
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancelAlloc()
+	parser := crawler.NewParser("MyPageCrawler/1.0", allocCtx, domainMgr)
 
 	filter, err := crawler.NewInDomainFilter(*startURL)
 	if err != nil {

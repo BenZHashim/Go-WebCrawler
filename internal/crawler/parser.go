@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -12,17 +13,26 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-
 	"strings"
 	"time"
 )
 
+type FetchAction int
+
+const (
+	ActionUseStatic   FetchAction = iota // The static content is good. Use it.
+	ActionRetryOneOff                    // It looks empty/suspicious. Retry with Chrome, but don't ban the domain.
+	ActionMarkDynamic                    // It explicitly asked for JS. Retry with Chrome AND ban the domain.
+)
+
 type Parser struct {
-	UserAgent string
+	UserAgent     string
+	allocCtx      context.Context
+	domainManager *DomainManager
 }
 
-func NewParser(userAgent string) *Parser {
-	return &Parser{UserAgent: userAgent}
+func NewParser(userAgent string, allocCtx context.Context, domainMgr *DomainManager) *Parser {
+	return &Parser{UserAgent: userAgent, allocCtx: allocCtx, domainManager: domainMgr}
 }
 
 func (p *Parser) GetOutBoundLinks(targetURL string) ([]string, error) {
@@ -42,31 +52,70 @@ func (p *Parser) GetOutBoundLinks(targetURL string) ([]string, error) {
 }
 
 func (p *Parser) Parse(targetURL string) (models.PageData, error) {
-	// 1. Fetch the raw stream
+	var bodyReader io.ReadCloser
+	var statusCode int
+	var err error
+	var loadTime time.Duration
+
 	start := time.Now()
-	body, statusCode, err := p.FetchDynamic(targetURL)
-	loadTime := time.Since(start)
+
+	// 1. CHECK CACHE: Is this domain permanently marked as dynamic?
+	if p.domainManager.NeedsDynamic(targetURL) {
+		bodyReader, statusCode, err = p.FetchDynamic(targetURL)
+	} else {
+		// 2. ATTEMPT STATIC FETCH
+		bodyReader, statusCode, err = p.FetchStatic(targetURL)
+
+		// 3. ANALYZE STATIC RESULT
+		if err == nil {
+			bodyBytes, readErr := io.ReadAll(bodyReader)
+			bodyReader.Close()
+
+			if readErr != nil {
+				return models.PageData{URL: targetURL}, readErr
+			}
+
+			// ASK THE JUDGE: What should we do with this body?
+			action := p.decideAction(bodyBytes, statusCode)
+
+			switch action {
+			case ActionMarkDynamic:
+				fmt.Printf("[SmartParse] HARD trigger for %s. Marking Domain as Dynamic.\n", targetURL)
+				p.domainManager.MarkDynamic(targetURL)
+				// Fallthrough to retry...
+				bodyReader, statusCode, err = p.FetchDynamic(targetURL)
+
+			case ActionRetryOneOff:
+				fmt.Printf("[SmartParse] SOFT trigger (length/heuristic) for %s. Retrying Dynamic (One-off).\n", targetURL)
+				bodyReader, statusCode, err = p.FetchDynamic(targetURL)
+
+			case ActionUseStatic:
+				// It was good! Restore the reader for extraction.
+				bodyReader = io.NopCloser(bytes.NewReader(bodyBytes))
+			}
+		}
+	}
+
+	loadTime = time.Since(start)
 
 	if err != nil {
 		return models.PageData{URL: targetURL}, err
 	}
-	defer body.Close()
+	defer bodyReader.Close()
 
-	// 2. Extract data from the stream
-	// Note: We pass the URL separately to resolve relative links (e.g. "/about")
-	data, err := p.Extract(body, targetURL)
+	// 4. EXTRACT CONTENT
+	data, err := p.Extract(bodyReader, targetURL)
 	if err != nil {
 		return models.PageData{URL: targetURL, StatusCode: statusCode}, err
 	}
 
-	// 3. Enrich with metadata
 	data.LoadTime = loadTime
 	data.StatusCode = statusCode
 
 	return data, nil
 }
 
-func (p *Parser) Fetch(targetURL string) (io.ReadCloser, int, error) {
+func (p *Parser) FetchStatic(targetURL string) (io.ReadCloser, int, error) {
 	client := http.Client{Timeout: 10 * time.Second}
 
 	req, err := http.NewRequest("GET", targetURL, nil)
@@ -152,22 +201,7 @@ func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
 		return nil, 0, nil
 	}
 
-	// 2. Setup Allocator (Stealth Flags)
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("excludeSwitches", "enable-automation"),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.UserAgent(profile.UserAgent),
-	)
-
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer cancelAlloc()
-
-	// 3. Create Context with Silent Logger
-	ctx, cancelCtx := chromedp.NewContext(allocCtx,
+	ctx, cancelCtx := chromedp.NewContext(p.allocCtx,
 		chromedp.WithLogf(func(string, ...interface{}) {}),
 	)
 	defer cancelCtx()
@@ -230,7 +264,7 @@ func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
 			return err
 		}),
 
-		chromedp.Sleep(5*time.Second),
+		//chromedp.Sleep(5*time.Second),
 
 		chromedp.Evaluate(`document.title`, &pageTitle),
 		chromedp.Evaluate(`document.body.innerText.substring(0, 150).replace(/\n/g, " ")`, &pageText),
@@ -253,6 +287,34 @@ func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
 	fmt.Printf("----------------------\n\n")
 
 	return io.NopCloser(strings.NewReader(htmlContent)), 200, nil
+}
+
+func (p *Parser) decideAction(html []byte, statusCode int) FetchAction {
+	// 1. Valid HTTP Errors (403/429/500) are NOT fixed by Chrome.
+	if statusCode >= 400 {
+		return ActionUseStatic
+	}
+
+	s := string(html)
+
+	// 2. Hard Failures (Explicit "Enable JS" or Bot Checks)
+	// These mean the domain is hostile to static crawlers.
+	if strings.Contains(s, "challenge-platform") ||
+		strings.Contains(s, "Cloudflare") ||
+		strings.Contains(s, "You need to enable JavaScript") ||
+		strings.Contains(s, "This site requires Javascript") {
+		return ActionMarkDynamic
+	}
+
+	// 3. Soft Failures (Suspiciously Empty)
+	// This might just be a glitch or a specific page structure.
+	// We retry this request, but we don't condemn the whole domain yet.
+	if len(s) < 500 {
+		return ActionRetryOneOff
+	}
+
+	// 4. Success
+	return ActionUseStatic
 }
 
 func (p *Parser) extractOutBoundLinks(r io.Reader, baseURL string) ([]string, error) {
@@ -320,6 +382,7 @@ func (p *Parser) Extract(r io.Reader, baseURL string) (models.PageData, error) {
 		if n.Type == html.ElementNode && n.Data == "head" {
 			return
 		}
+
 		// 1. Find Title
 		if n.Type == html.ElementNode && n.Data == "title" && n.FirstChild != nil {
 			data.Title = n.FirstChild.Data

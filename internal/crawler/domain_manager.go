@@ -13,17 +13,19 @@ import (
 )
 
 type DomainManager struct {
-	mu          sync.Mutex
-	limiters    map[string]*rate.Limiter
-	robotsCache map[string]*robotstxt.Group
-	fireDelay   time.Duration
+	mu           sync.RWMutex
+	limiters     map[string]*rate.Limiter
+	robotsCache  map[string]*robotstxt.Group
+	dynamicRules map[string]bool
+	fireDelay    time.Duration
 }
 
 func NewDomainManager(duration time.Duration) *DomainManager {
 	return &DomainManager{
-		limiters:    make(map[string]*rate.Limiter),
-		robotsCache: make(map[string]*robotstxt.Group),
-		fireDelay:   duration,
+		limiters:     make(map[string]*rate.Limiter),
+		robotsCache:  make(map[string]*robotstxt.Group),
+		dynamicRules: make(map[string]bool),
+		fireDelay:    duration,
 	}
 }
 
@@ -85,6 +87,29 @@ func (d *DomainManager) IsAllowed(link string) bool {
 		return true // No robots.txt or parse error = Allowed
 	}
 	return group.Test(u.Path)
+}
+
+func (d *DomainManager) NeedsDynamic(targetURl string) bool {
+	u, _ := url.Parse(targetURl)
+	host := u.Host
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.dynamicRules[host]
+}
+
+func (d *DomainManager) MarkDynamic(targetURL string) {
+	u, _ := url.Parse(targetURL)
+	host := u.Host
+
+	d.mu.Lock()
+	// Optimization: If we already know, don't hit DB
+	if d.dynamicRules[host] {
+		d.mu.Unlock()
+		return
+	}
+	d.dynamicRules[host] = true
+	d.mu.Unlock()
 }
 
 func getDomain(url string) models.DataSource {

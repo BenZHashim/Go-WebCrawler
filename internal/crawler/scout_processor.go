@@ -12,7 +12,7 @@ type ScoutProcessor struct {
 }
 
 func (s *ScoutProcessor) Process(url string) ([]models.URLQueue, []string, error) {
-	// 1. Fetch and extract links
+	// 1. FetchStatic and extract links
 	allLinks, err := s.Parser.GetOutBoundLinks(url)
 	if err != nil {
 		return nil, nil, err
