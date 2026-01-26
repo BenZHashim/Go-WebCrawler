@@ -79,30 +79,32 @@ classDiagram
     direction TB
 
     class Engine {
-        +Run(seeds)
-        -startCrawlWorker()
-        -startStorageWorker()
+        Run(seeds)
+        startCrawlWorker()
+        startStorageWorker()
     }
 
     class Processor {
         <<interface>>
-        +Process(url) (Data, Links, error)
+        Process(url) (Data, Links, error)
     }
 
     class Sink {
         <<interface>>
-        +Save(batch) error
+        Save(batch) error
     }
 
     class Parser {
-        +FetchStatic()
-        +FetchDynamic()
-        +Parse()
+        FetchStatic()
+        FetchDynamic()
+        Parse()
     }
 
     class DomainManager {
-        +Wait(url)
-        +IsAllowed(url)
+        Wait(url)
+        IsAllowed(url)
+        NeedsDynamic(url)
+        MarkDynamic(url)
     }
 
     %% Relationships
@@ -113,10 +115,10 @@ classDiagram
     
     %% Implementations
     class PageProcessor {
-        +Filter URLFilter
+        Filter URLFilter
     }
     class PageSink {
-        +db *sql.DB
+        db *sql.DB
     }
     
     PageProcessor ..|> Processor : Implements
