@@ -24,6 +24,104 @@ Designed for scalability and extensibility, it uses a worker pool architecture t
 4.  **Filtering**: Outbound links are filtered to ensure they stay within the target domain or match specific product patterns.
 5.  **Storage**: Extracted data is sent to a `Sink`, which batches records and efficiently inserts them into PostgreSQL.
 
+## 🏗 Architecture
+
+```mermaid
+graph TD
+    %% Nodes representing external systems
+    User((User))
+    Web[Target Website]
+    DB[(PostgreSQL)]
+    Chrome[Headless Chrome]
+
+    %% Main System Components
+    subgraph "Go Crawler Engine"
+        Orchestrator[Engine Orchestrator]
+        WorkList[WorkList Channel]
+        Worker[Worker Pool]
+        
+        
+        subgraph "Processing Pipeline"
+            DM[Domain Manager]
+            Proc[Page Processor]
+            Parser[Hybrid Parser]
+            Results[Results Channel]
+            Sink[Storage Sink]
+        end
+    end
+
+    %% Data Flow Connections
+    User -- "StartURL" --> Orchestrator
+    Orchestrator -- "Seed" --> WorkList
+    WorkList -- "Pop URL" --> Worker
+    
+    Worker -- "Rate Limit / Robots.txt" --> DM
+    Worker -- "Process(URL)" --> Proc
+    
+    Proc -- "Fetch Content" --> Parser
+    Parser -- "HTTP Get" --> Web
+    Parser -- "Fallback / Dynamic" --> Chrome
+    Chrome -- "Render" --> Web
+    
+    Proc -- "Extracted PageData" --> Results
+    Proc -- "Discovered Links" --> WorkList
+    
+    Results -- "Buffer & Batch" --> Sink
+    Sink -- "INSERT" --> DB
+```
+
+## 🧩 Code Architecture
+
+While "How It Works" describes the data flow, this diagram shows how the Go interfaces (`Processor`, `Sink`) decouple the crawling logic from the storage and parsing implementations.
+
+```mermaid
+classDiagram
+    direction TB
+
+    class Engine {
+        +Run(seeds)
+        -startCrawlWorker()
+        -startStorageWorker()
+    }
+
+    class Processor {
+        <<interface>>
+        +Process(url) (Data, Links, error)
+    }
+
+    class Sink {
+        <<interface>>
+        +Save(batch) error
+    }
+
+    class Parser {
+        +FetchStatic()
+        +FetchDynamic()
+        +Parse()
+    }
+
+    class DomainManager {
+        +Wait(url)
+        +IsAllowed(url)
+    }
+
+    %% Relationships
+    Engine --> Processor : Uses
+    Engine --> Sink : Uses
+    Engine --> DomainManager : Enforces Rules
+    Processor --> Parser : Delegates Fetching
+    
+    %% Implementations
+    class PageProcessor {
+        +Filter URLFilter
+    }
+    class PageSink {
+        +db *sql.DB
+    }
+    
+    PageProcessor ..|> Processor : Implements
+    PageSink ..|> Sink : Implements
+```
 ## 🛠 Tech Stack
 
 * **Language**: Go 1.24
