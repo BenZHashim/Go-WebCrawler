@@ -88,7 +88,10 @@ func (engine *Engine[T]) startCrawlWorker(ctx context.Context, id int) {
 				if engine.visited.Contains(link) || !engine.domainMgr.IsAllowed(link) {
 					continue
 				}
-				engine.domainMgr.Wait(link)
+				err := engine.domainMgr.Wait(link)
+				if err != nil {
+					log.Println(err)
+				}
 
 				fmt.Printf("[Worker %d] Processing: %s\n", id, link)
 
