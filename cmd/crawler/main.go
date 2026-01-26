@@ -18,21 +18,29 @@ import (
 
 func main() {
 	// 1. Setup
-	startURL := flag.String("url", "https://example.com", "Starting URL")
+	startURL := flag.String("url", "https://www.hollywoodreporter.com", "Starting URL")
 	workers := flag.Int("workers", 10, "Worker count")
 	flag.Parse()
+
+	log.Printf("Starting crawler with URL %s", *startURL)
 
 	db := waitForDB(os.Getenv("DB_URL"))
 	defer db.Close()
 
 	store := storage.NewStorage(db)
 	parser := crawler.NewParser("MyPageCrawler/1.0")
-	domainMgr := crawler.NewDomainManager(5 * time.Second)
+	domainMgr := crawler.NewDomainManager(2 * time.Second)
+
+	filter, err := crawler.NewInDomainFilter(*startURL)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// 2. Define Strategies for Page Content
 	// Strategy: Parse full content
 	pageProc := &crawler.PageProcessor{
 		Parser: parser,
+		Filter: filter,
 	}
 	// Sink: Save to 'pages' table
 	pageSink := &storage.PageSink{Storage: store}

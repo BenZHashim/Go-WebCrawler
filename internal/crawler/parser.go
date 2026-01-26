@@ -317,6 +317,9 @@ func (p *Parser) Extract(r io.Reader, baseURL string) (models.PageData, error) {
 
 	var visit func(*html.Node)
 	visit = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "head" {
+			return
+		}
 		// 1. Find Title
 		if n.Type == html.ElementNode && n.Data == "title" && n.FirstChild != nil {
 			data.Title = n.FirstChild.Data

@@ -106,6 +106,7 @@ func (engine *Engine[T]) startCrawlWorker(ctx context.Context, id int) {
 
 				// Queue new links
 				// (Non-blocking send optimization could go here)
+				log.Printf("[Worker %d] Found %d Valid Links, adding to work Queue\n", id, len(outbound))
 				go func(l []string) { engine.worklist <- l }(outbound)
 			}
 		}
