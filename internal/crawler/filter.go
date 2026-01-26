@@ -18,7 +18,7 @@ func (filter ProductFilter) Filter(source models.DataSource, link string) bool {
 			return true
 		}
 	case models.Newegg:
-		if strings.Contains(link, "/p/") {
+		if strings.Contains(link, "/p/") && strings.Contains(link, "corsair") {
 			return true
 		}
 	default:

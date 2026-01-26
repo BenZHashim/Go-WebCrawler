@@ -16,12 +16,14 @@ type DomainManager struct {
 	mu          sync.Mutex
 	limiters    map[string]*rate.Limiter
 	robotsCache map[string]*robotstxt.Group
+	fireDelay   time.Duration
 }
 
-func NewDomainManager() *DomainManager {
+func NewDomainManager(duration time.Duration) *DomainManager {
 	return &DomainManager{
 		limiters:    make(map[string]*rate.Limiter),
 		robotsCache: make(map[string]*robotstxt.Group),
+		fireDelay:   duration,
 	}
 }
 
@@ -39,7 +41,7 @@ func (d *DomainManager) Wait(targetURL string) error {
 		// Create a new limiter: 1 request every 2 seconds
 		// rate.Every(2 * time.Second) = interval
 		// 1 = burst size (allow 1 request immediately, then wait)
-		limiter = rate.NewLimiter(rate.Every(8*time.Second), 1)
+		limiter = rate.NewLimiter(rate.Every(d.fireDelay), 1)
 		d.limiters[domain] = limiter
 	}
 	d.mu.Unlock()

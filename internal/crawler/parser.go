@@ -1,11 +1,18 @@
 package crawler
 
 import (
+	"fmt"
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 	"go-crawler/pkg/models"
+	"golang.org/x/net/context"
 	"golang.org/x/net/html"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
+
 	"strings"
 	"time"
 )
@@ -20,7 +27,7 @@ func NewParser(userAgent string) *Parser {
 
 func (p *Parser) GetOutBoundLinks(targetURL string) ([]string, error) {
 
-	body, _, err := p.Fetch(targetURL)
+	body, _, err := p.FetchDynamic(targetURL)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +44,7 @@ func (p *Parser) GetOutBoundLinks(targetURL string) ([]string, error) {
 func (p *Parser) Parse(targetURL string) (models.PageData, error) {
 	// 1. Fetch the raw stream
 	start := time.Now()
-	body, statusCode, err := p.Fetch(targetURL)
+	body, statusCode, err := p.FetchDynamic(targetURL)
 	loadTime := time.Since(start)
 
 	if err != nil {
@@ -77,6 +84,177 @@ func (p *Parser) Fetch(targetURL string) (io.ReadCloser, int, error) {
 	return resp.Body, resp.StatusCode, nil
 }
 
+const (
+	// Removes the "I am a robot" flag
+	scriptStealth = `
+		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+		window.navigator.chrome = { runtime: {} };
+	`
+	// Forces all links into a clean list for the Go parser
+	scriptLinkShim = `(function(){
+		window.scrollTo(0, document.body.scrollHeight);
+		const links = document.querySelectorAll('a[href]');
+		const shim = document.createElement('div');
+		shim.id = 'crawler-shim';
+		shim.style.display = 'none';
+		links.forEach(l => {
+			const a = document.createElement('a');
+			a.href = l.href;
+			a.innerText = 'shim-link';
+			shim.appendChild(a);
+		});
+		document.body.appendChild(shim);
+	})()`
+)
+
+type BrowserProfile struct {
+	UserAgent  string
+	ClientHint string
+}
+
+// Valid Linux Profiles (Matches your Docker Container)
+var linuxProfiles = []BrowserProfile{
+	// Profile 1: Chrome 132 (Latest)
+	{
+		UserAgent:  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+		ClientHint: `"Not A(Brand";v="99", "Google Chrome";v="132", "Chromium";v="132"`,
+	},
+	// Profile 2: Chrome 131
+	{
+		UserAgent:  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+		ClientHint: `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+	},
+	// Profile 3: Chrome 130
+	{
+		UserAgent:  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+		ClientHint: `"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"`,
+	},
+}
+
+func getRandomProfile() BrowserProfile {
+	return linuxProfiles[rand.Intn(len(linuxProfiles))]
+}
+
+func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
+	profile := getRandomProfile()
+	// 1. Determine the correct "Wait Selector" based on the domain
+	waitSelector := "body" // Default fallback
+	if strings.Contains(targetURL, "newegg.com") {
+		waitSelector = "a.item-title"
+	} else if strings.Contains(targetURL, "amazon.com") {
+		// Amazon's main search result container
+		waitSelector = "div.s-main-slot"
+	} else if strings.Contains(targetURL, "bestbuy.com") {
+		// BestBuy's product item class
+		waitSelector = ".sku-item"
+	}
+	if waitSelector == "APPLES" {
+		return nil, 0, nil
+	}
+
+	// 2. Setup Allocator (Stealth Flags)
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("excludeSwitches", "enable-automation"),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.UserAgent(profile.UserAgent),
+	)
+
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancelAlloc()
+
+	// 3. Create Context with Silent Logger
+	ctx, cancelCtx := chromedp.NewContext(allocCtx,
+		chromedp.WithLogf(func(string, ...interface{}) {}),
+	)
+	defer cancelCtx()
+
+	// 4. Timeout (45s)
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	var htmlContent string
+	var pageTitle string
+	var pageText string
+
+	// 5. Run Tasks
+	err := chromedp.Run(ctx,
+		// (A) Inject Stealth (Pre-load)
+		chromedp.ActionFunc(func(c context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(scriptStealth).Do(c)
+			return err
+		}),
+
+		network.Enable(),
+		network.SetExtraHTTPHeaders(network.Headers{
+			"Accept-Language": "en-US,en;q=0.9",
+
+			// USE THE MATCHING HINT HERE:
+			"Sec-Ch-Ua": profile.ClientHint,
+
+			"Sec-Ch-Ua-Mobile":          "?0",
+			"Sec-Ch-Ua-Platform":        `"Linux"`, // Always Linux for Docker
+			"Sec-Fetch-Dest":            "document",
+			"Sec-Fetch-Mode":            "navigate",
+			"Sec-Fetch-Site":            "none",
+			"Sec-Fetch-User":            "?1",
+			"Upgrade-Insecure-Requests": "1",
+		}),
+
+		chromedp.EmulateViewport(1920, 1080),
+		chromedp.Navigate(targetURL),
+
+		// 1. Move to a RANDOM point in the "Safe Zone"
+		// We target a box between X:300-500 and Y:300-500
+		chromedp.ActionFunc(func(c context.Context) error {
+			// Randomize X and Y by adding a random number between 0-200
+			x := 300 + rand.Intn(200)
+			y := 300 + rand.Intn(200)
+
+			// Move the mouse to this random spot
+			return chromedp.MouseClickXY(float64(x), float64(y)).Do(c)
+		}),
+
+		// 2. Add "Human Jitter" (Small pauses)
+		// Humans don't click instantly. They hover, then click.
+		chromedp.Sleep(time.Duration(rand.Intn(1000)+500)*time.Millisecond),
+
+		// 3. Scroll randomly (Reading behavior)
+		chromedp.ActionFunc(func(c context.Context) error {
+			scrollDistance := 300 + rand.Intn(400) // Scroll between 300px and 700px
+			script := fmt.Sprintf("window.scrollTo({top: %d, behavior: 'smooth'});", scrollDistance)
+			_, err := page.AddScriptToEvaluateOnNewDocument(script).Do(c)
+			return err
+		}),
+
+		chromedp.Sleep(5*time.Second),
+
+		chromedp.Evaluate(`document.title`, &pageTitle),
+		chromedp.Evaluate(`document.body.innerText.substring(0, 150).replace(/\n/g, " ")`, &pageText),
+
+		// (C) Run the Link Shim
+		chromedp.Evaluate(scriptLinkShim, nil),
+
+		// (D) Capture HTML
+		chromedp.OuterHTML(`html`, &htmlContent),
+	)
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	fmt.Printf("\n--- CRAWLER REPORT ---\n")
+	fmt.Printf("URL: %s\n", targetURL)
+	fmt.Printf("PAGE TITLE:  [%s]\n", pageTitle)
+	fmt.Printf("PAGE TEXT:   [%s]\n", pageText)
+	fmt.Printf("----------------------\n\n")
+
+	return io.NopCloser(strings.NewReader(htmlContent)), 200, nil
+}
+
 func (p *Parser) extractOutBoundLinks(r io.Reader, baseURL string) ([]string, error) {
 	doc, err := html.Parse(r)
 	if err != nil {
@@ -85,20 +263,43 @@ func (p *Parser) extractOutBoundLinks(r io.Reader, baseURL string) ([]string, er
 
 	var links []string
 
+	nodeCount := 0 // <--- Debug counter
+
 	var visit func(n *html.Node)
 	visit = func(n *html.Node) {
+		nodeCount++ // Count every node visited
+
 		if n.Type == html.ElementNode && n.Data == "a" {
+			// fmt.Println("Found anchor tag!") // Uncomment to see every <a> tag
 			for _, a := range n.Attr {
 				if a.Key == "href" {
+					// Debug: Print the RAW href value
+					// fmt.Printf("  Raw href: %s\n", a.Val)
+
 					absoluteURL := resolveURL(baseURL, a.Val)
-					if absoluteURL != "" {
+
+					// Debug: Print why it might be failing
+					if absoluteURL == "" {
+						// fmt.Printf("  -> Failed to resolve: %s with base %s\n", a.Val, baseURL)
+					} else {
 						links = append(links, absoluteURL)
 					}
 				}
 			}
 		}
+
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			visit(c)
+		}
 	}
 	visit(doc)
+
+	// CRITICAL CHECK
+	if nodeCount < 5 {
+		fmt.Println("WARNING: Parser saw almost no nodes! The Reader passed to extractOutBoundLinks was likely empty/already read.")
+	} else {
+		fmt.Printf("Parser visited %d nodes but found %d links.\n", nodeCount, len(links))
+	}
 
 	return links, nil
 }

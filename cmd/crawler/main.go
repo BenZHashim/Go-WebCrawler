@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
-	"go-crawler/internal"
 	"go-crawler/internal/crawler"
+	"go-crawler/internal/crawler/engine"
 	"go-crawler/internal/storage"
 	"go-crawler/pkg/models"
 	"log"
@@ -15,55 +16,47 @@ import (
 	"time"
 )
 
-//TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
-
 func main() {
-
-	defaultURL := "https://www.newegg.com/p/pl?d=corsair"
-	defaultWorkers := 10
-
-	// 2. Parse Flags (allows running: ./crawler -url="https://google.com" -workers=50)
-	startURL := flag.String("url", defaultURL, "The starting URL to crawl")
-	numWorkers := flag.Int("workers", defaultWorkers, "Number of concurrent workers")
+	// 1. Setup
+	startURL := flag.String("url", "https://example.com", "Starting URL")
+	workers := flag.Int("workers", 10, "Worker count")
 	flag.Parse()
 
-	dbURL := os.Getenv("DB_URL")
-
-	db := waitForDB(dbURL)
+	db := waitForDB(os.Getenv("DB_URL"))
 	defer db.Close()
 
-	// 3. Initialize Channels and State
-	worklist := make(chan []string) // Queue of links to process
-	//pageResults := make(chan models.PageData, 100) // Data ready to be saved
-	queueResults := make(chan models.URLQueue, 100)
-	visited := internal.NewSafeMap()
+	store := storage.NewStorage(db)
+	parser := crawler.NewParser("MyPageCrawler/1.0")
+	domainMgr := crawler.NewDomainManager(5 * time.Second)
 
-	domainManager := crawler.NewDomainManager()
-
-	storageWorker := storage.NewStorage(db)
-	//go storageWorker.StartPageWorker(pageResults)
-	go storageWorker.StartProductQueueWorker(queueResults)
-
-	parserService := crawler.NewParser("MyPortfolioCrawler/1.0 (benjaminzhashim@gmail.com)")
-
-	for i := 0; i < *numWorkers; i++ {
-		// We just call the named function now
-		//go crawler.PageCrawlWorker(i, worklist, pageResults, visited, domainManager, parserService)
-		go crawler.StartScoutCrawler(i, worklist, queueResults, visited, domainManager, parserService)
+	// 2. Define Strategies for Page Content
+	// Strategy: Parse full content
+	pageProc := &crawler.PageProcessor{
+		Parser: parser,
 	}
+	// Sink: Save to 'pages' table
+	pageSink := &storage.PageSink{Storage: store}
 
-	fmt.Println("Starting Crawler...")
-	go func() { worklist <- []string{*startURL} }()
+	// 3. Initialize Engine with [models.PageData]
+	// Note: We increase BatchSize because page data is larger than product links
+	crawlerEngine := engine.NewEngine[models.PageData](
+		engine.Config{Workers: *workers, BatchSize: 20},
+		pageProc,
+		pageSink,
+		domainMgr,
+	)
 
-	stopChan := make(chan os.Signal, 1)
-	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+	// 4. Run
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		stopChan := make(chan os.Signal, 1)
+		signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+		<-stopChan
+		cancel()
+	}()
 
-	// Block here until a signal is received
-	<-stopChan
-	log.Println("Shutting down")
-
-	db.Close()
+	log.Println("Starting Page Content Crawler...")
+	crawlerEngine.Run(ctx, *startURL)
 }
 
 func waitForDB(url string) *sql.DB {
