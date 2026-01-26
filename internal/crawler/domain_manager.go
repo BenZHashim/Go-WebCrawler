@@ -57,36 +57,47 @@ func (d *DomainManager) IsAllowed(link string) bool {
 	if err != nil {
 		return false
 	}
+	host := u.Host
+
+	d.mu.RLock()
+	group, exists := d.robotsCache[host]
+	d.mu.RUnlock()
+
+	if exists {
+		if group == nil {
+			return true
+		}
+		return group.Test(u.Path)
+	}
+
+	resp, err := http.Get(u.Scheme + "://" + host + "/robots.txt")
+
+	var newGroup *robotstxt.Group
+	// Only parse if the request actually succeeded
+	if err == nil && resp.StatusCode == 200 {
+		data, err := robotstxt.FromResponse(resp)
+		if err == nil {
+			newGroup = data.FindGroup("MyGoCrawler")
+		}
+		resp.Body.Close()
+	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Check if we have cached robots.txt data
-	group, exists := d.robotsCache[u.Host]
-	if !exists {
-		// If not, fetch it (simplification: fetching inside lock is slow,
-		// in production use a separate fetching routine)
-		resp, err := http.Get(u.Scheme + "://" + u.Host + "/robots.txt")
-		if err != nil || resp.StatusCode != 200 {
-			// Assume allowed if error
-			d.robotsCache[u.Host] = nil
+	if cachedGroup, alreadyFilled := d.robotsCache[host]; alreadyFilled {
+		if cachedGroup == nil {
 			return true
 		}
-		defer resp.Body.Close()
-
-		data, err := robotstxt.FromResponse(resp)
-		if err != nil {
-			d.robotsCache[u.Host] = nil
-			return true
-		}
-		group = data.FindGroup("MyGoCrawler")
-		d.robotsCache[u.Host] = group
+		return cachedGroup.Test(u.Path)
 	}
 
-	if group == nil {
-		return true // No robots.txt or parse error = Allowed
+	d.robotsCache[host] = newGroup
+
+	if newGroup == nil {
+		return true
 	}
-	return group.Test(u.Path)
+	return newGroup.Test(u.Path)
 }
 
 func (d *DomainManager) NeedsDynamic(targetURl string) bool {

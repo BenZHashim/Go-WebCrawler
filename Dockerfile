@@ -1,11 +1,21 @@
-# Start with a small, lightweight Go image
-# Start with a small, lightweight Go image
-FROM golang:1.24-alpine
+# ------------------------------------------------------------------------------
+# STAGE 1: The Builder
+# ------------------------------------------------------------------------------
+# We use the official Go image to compile the application.
+FROM golang:1.24-alpine AS builder
 
-# Set the working directory inside the container
+RUN apk add --no-cache git
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o crawler ./cmd/crawler
+
+FROM alpine:latest
 WORKDIR /app
 
-# --- NEW: Install Chromium and dependencies ---
 RUN apk add --no-cache \
     chromium \
     nss \
@@ -13,17 +23,10 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont
-# ---------------------------------------------
 
-# Copy dependency files first (better caching)
-COPY go.mod go.sum ./
-RUN go mod download
+COPY --from=builder /app/crawler .
 
-# Copy ALL your new files
-COPY . .
+RUN addgroup -S crawlergroup && adduser -S crawleruser -G crawlergroup
+USER crawleruser
 
-# Build the crawler
-RUN go build -o crawler ./cmd/crawler
-
-# Command to run when the container starts
 CMD ["./crawler"]

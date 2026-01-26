@@ -79,9 +79,10 @@ func (p *Parser) Parse(targetURL string) (models.PageData, error) {
 			action := p.decideAction(bodyBytes, statusCode)
 
 			switch action {
+
 			case ActionMarkDynamic:
 				fmt.Printf("[SmartParse] HARD trigger for %s. Marking Domain as Dynamic.\n", targetURL)
-				p.domainManager.MarkDynamic(targetURL)
+				//p.domainManager.MarkDynamic(targetURL)
 				// Fallthrough to retry...
 				bodyReader, statusCode, err = p.FetchDynamic(targetURL)
 
@@ -186,20 +187,6 @@ func getRandomProfile() BrowserProfile {
 
 func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
 	profile := getRandomProfile()
-	// 1. Determine the correct "Wait Selector" based on the domain
-	waitSelector := "body" // Default fallback
-	if strings.Contains(targetURL, "newegg.com") {
-		waitSelector = "a.item-title"
-	} else if strings.Contains(targetURL, "amazon.com") {
-		// Amazon's main search result container
-		waitSelector = "div.s-main-slot"
-	} else if strings.Contains(targetURL, "bestbuy.com") {
-		// BestBuy's product item class
-		waitSelector = ".sku-item"
-	}
-	if waitSelector == "APPLES" {
-		return nil, 0, nil
-	}
 
 	ctx, cancelCtx := chromedp.NewContext(p.allocCtx,
 		chromedp.WithLogf(func(string, ...interface{}) {}),
@@ -264,7 +251,7 @@ func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
 			return err
 		}),
 
-		//chromedp.Sleep(5*time.Second),
+		chromedp.Sleep(2*time.Second),
 
 		chromedp.Evaluate(`document.title`, &pageTitle),
 		chromedp.Evaluate(`document.body.innerText.substring(0, 150).replace(/\n/g, " ")`, &pageText),
@@ -403,7 +390,11 @@ func (p *Parser) Extract(r io.Reader, baseURL string) (models.PageData, error) {
 		// 3. Extract Text (ignoring scripts/styles)
 		if n.Type == html.TextNode {
 			parent := n.Parent
-			if parent != nil && parent.Data != "script" && parent.Data != "style" {
+			if parent != nil &&
+				parent.Data != "script" &&
+				parent.Data != "style" &&
+				parent.Data != "noscript" &&
+				parent.Data != "iframe" {
 				text := strings.TrimSpace(n.Data)
 				if len(text) > 0 {
 					textBuilder.WriteString(text + " ")

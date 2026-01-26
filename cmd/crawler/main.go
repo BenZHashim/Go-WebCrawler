@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/chromedp/chromedp"
+	"go-crawler/internal/config"
 	"go-crawler/internal/crawler"
 	"go-crawler/internal/crawler/engine"
 	"go-crawler/internal/storage"
@@ -19,17 +20,20 @@ import (
 
 func main() {
 	// 1. Setup
-	startURL := flag.String("url", "https://www.hollywoodreporter.com", "Starting URL")
-	workers := flag.Int("workers", 10, "Worker count")
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
 	flag.Parse()
 
-	log.Printf("Starting crawler with URL %s", *startURL)
+	log.Printf("Starting crawler with URL %s", cfg.StartURL)
 
-	db := waitForDB(os.Getenv("DB_URL"))
+	db := waitForDB(cfg.DatabaseURL)
 	defer db.Close()
 
 	store := storage.NewStorage(db)
-	domainMgr := crawler.NewDomainManager(2 * time.Second)
+	domainMgr := crawler.NewDomainManager(cfg.RateLimit)
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
@@ -45,7 +49,7 @@ func main() {
 	defer cancelAlloc()
 	parser := crawler.NewParser("MyPageCrawler/1.0", allocCtx, domainMgr)
 
-	filter, err := crawler.NewInDomainFilter(*startURL)
+	filter, err := crawler.NewInDomainFilter(cfg.StartURL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,7 +66,7 @@ func main() {
 	// 3. Initialize Engine with [models.PageData]
 	// Note: We increase BatchSize because page data is larger than product links
 	crawlerEngine := engine.NewEngine[models.PageData](
-		engine.Config{Workers: *workers, BatchSize: 20},
+		engine.Config{Workers: cfg.Workers, BatchSize: cfg.BatchSize},
 		pageProc,
 		pageSink,
 		domainMgr,
@@ -78,7 +82,7 @@ func main() {
 	}()
 
 	log.Println("Starting Page Content Crawler...")
-	crawlerEngine.Run(ctx, *startURL)
+	crawlerEngine.Run(ctx, cfg.StartURL)
 }
 
 func waitForDB(url string) *sql.DB {

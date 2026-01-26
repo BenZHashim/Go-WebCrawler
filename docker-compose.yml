@@ -20,9 +20,8 @@ services:
     build: .
     depends_on:
       - db # Wait for DB to start before starting crawler
-    environment:
-      # Note: The hostname is 'db', not 'localhost'
-      DB_URL: "postgres://myuser:mypassword@db:5432/crawler_db?sslmode=disable"
+    env_file:
+      - .env
 
   adminer:
     image: adminer
