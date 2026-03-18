@@ -29,7 +29,6 @@ func (s *PageSink) Save(batch []models.PageData) error {
 	defer stmt.Close()
 
 	for _, p := range batch {
-		// Log or track specific errors if needed, otherwise continue
 		_, err := stmt.Exec(
 			p.URL,
 			p.Title,
@@ -39,9 +38,25 @@ func (s *PageSink) Save(batch []models.PageData) error {
 			time.Now(),
 		)
 		if err != nil {
-			log.Printf("Error saving page %s: %v", p.URL, err)
+			tx.Rollback()
+			s.saveIndividually(batch)
+			return nil
 		}
 	}
 
 	return tx.Commit()
+}
+
+func (s *PageSink) saveIndividually(batch []models.PageData) {
+	for _, p := range batch {
+		_, err := s.db.Exec(`
+			INSERT INTO pages (url, title, content_text, status_code, load_time_ms, crawled_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (url) DO NOTHING`,
+			p.URL, p.Title, p.TextContent, p.StatusCode, p.LoadTime.Milliseconds(), time.Now(),
+		)
+		if err != nil {
+			log.Printf("Skipping page %s: %v", p.URL, err)
+		}
+	}
 }

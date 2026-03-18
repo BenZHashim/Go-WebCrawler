@@ -16,8 +16,11 @@ type Config struct {
 	// Workers maps to WORKERS. Default to 10 if not set.
 	Workers int `envconfig:"WORKERS" default:"10"`
 
-	// StartURL maps to START_URL.
-	StartURL string `envconfig:"START_URL" default:"https://www.hollywoodreporter.com"`
+	// StartURLs maps to START_URLS (comma-separated list of seed URLs).
+	StartURLs []string `envconfig:"START_URLS" required:"true"`
+
+	// MaxURLs caps the total number of URLs crawled (0 = unlimited).
+	MaxURLs int `envconfig:"MAX_URLS" default:"0"`
 
 	// BatchSize maps to BATCH_SIZE.
 	BatchSize int `envconfig:"BATCH_SIZE" default:"20"`

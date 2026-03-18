@@ -7,6 +7,7 @@ import (
 	"go-crawler/internal/crawler"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type Config struct {
 	Workers   int
 	BatchSize int
 	RateLimit time.Duration
+	MaxURLs   int // 0 = unlimited
 }
 
 // Engine orchestrates the crawling process.
@@ -40,6 +42,7 @@ type Engine[T any] struct {
 	worklist  chan []string
 	results   chan T
 	waitGroup sync.WaitGroup
+	urlCount  atomic.Int64
 }
 
 func NewEngine[T any](cfg Config, proc Processor[T], sink Sink[T], domainMgr *crawler.DomainManager) *Engine[T] {
@@ -49,8 +52,8 @@ func NewEngine[T any](cfg Config, proc Processor[T], sink Sink[T], domainMgr *cr
 		sink:      sink,
 		visited:   internal.NewSafeMap(),
 		domainMgr: domainMgr,
-		worklist:  make(chan []string, 100),
-		results:   make(chan T, cfg.BatchSize*2),
+		worklist:  make(chan []string, 1000),
+		results:   make(chan T, cfg.BatchSize*20),
 	}
 }
 
@@ -88,18 +91,21 @@ func (engine *Engine[T]) startCrawlWorker(ctx context.Context, id int) {
 				if engine.visited.Contains(link) || !engine.domainMgr.IsAllowed(link) {
 					continue
 				}
+				if engine.config.MaxURLs > 0 && engine.urlCount.Load() >= int64(engine.config.MaxURLs) {
+					log.Printf("Reached MAX_URLS limit (%d), stopping workers", engine.config.MaxURLs)
+					return
+				}
+				engine.urlCount.Add(1)
 				err := engine.domainMgr.Wait(link)
 				if err != nil {
 					log.Println(err)
 				}
 
-				fmt.Printf("[Worker %d] Processing: %s\n", id, link)
-
+	
 				// Execute the Strategy
 				data, outbound, err := engine.processor.Process(link)
 				if err != nil {
-					log.Printf("[Worker %d] Error: %v", id, err)
-					continue
+						continue
 				}
 
 				// Send results to storage
@@ -109,7 +115,7 @@ func (engine *Engine[T]) startCrawlWorker(ctx context.Context, id int) {
 
 				// Queue new links
 				// (Non-blocking send optimization could go here)
-				log.Printf("[Worker %d] Found %d Valid Links, adding to work Queue\n", id, len(outbound))
+				//log.Printf("[Worker %d] Found %d Valid Links, adding to work Queue\n", id, len(outbound))
 				go func(l []string) { engine.worklist <- l }(outbound)
 			}
 		}

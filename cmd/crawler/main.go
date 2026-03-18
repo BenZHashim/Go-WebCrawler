@@ -27,7 +27,12 @@ func main() {
 
 	flag.Parse()
 
-	log.Printf("Starting crawler with URL %s", cfg.StartURL)
+	log.Printf("Starting stress-test crawler with %d seed URLs: %v", len(cfg.StartURLs), cfg.StartURLs)
+	if cfg.MaxURLs > 0 {
+		log.Printf("URL cap: %d", cfg.MaxURLs)
+	} else {
+		log.Printf("URL cap: unlimited (Ctrl+C to stop)")
+	}
 
 	db := waitForDB(cfg.DatabaseURL)
 	defer db.Close()
@@ -49,10 +54,8 @@ func main() {
 	defer cancelAlloc()
 	parser := crawler.NewParser("MyPageCrawler/1.0", allocCtx, domainMgr)
 
-	filter, err := crawler.NewInDomainFilter(cfg.StartURL)
-	if err != nil {
-		log.Fatal(err)
-	}
+	// AlwaysFilter: follow links across any domain for maximum spread in stress testing.
+	filter := &crawler.AlwaysFilter{}
 
 	// 2. Define Strategies for Page Content
 	// Strategy: Parse full content
@@ -66,7 +69,7 @@ func main() {
 	// 3. Initialize Engine with [models.PageData]
 	// Note: We increase BatchSize because page data is larger than product links
 	crawlerEngine := engine.NewEngine[models.PageData](
-		engine.Config{Workers: cfg.Workers, BatchSize: cfg.BatchSize},
+		engine.Config{Workers: cfg.Workers, BatchSize: cfg.BatchSize, MaxURLs: cfg.MaxURLs},
 		pageProc,
 		pageSink,
 		domainMgr,
@@ -82,7 +85,7 @@ func main() {
 	}()
 
 	log.Println("Starting Page Content Crawler...")
-	crawlerEngine.Run(ctx, cfg.StartURL)
+	crawlerEngine.Run(ctx, cfg.StartURLs...)
 }
 
 func waitForDB(url string) *sql.DB {

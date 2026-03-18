@@ -29,10 +29,23 @@ type Parser struct {
 	UserAgent     string
 	allocCtx      context.Context
 	domainManager *DomainManager
+	httpClient    *http.Client
 }
 
 func NewParser(userAgent string, allocCtx context.Context, domainMgr *DomainManager) *Parser {
-	return &Parser{UserAgent: userAgent, allocCtx: allocCtx, domainManager: domainMgr}
+	return &Parser{
+		UserAgent:     userAgent,
+		allocCtx:      allocCtx,
+		domainManager: domainMgr,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        200,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+	}
 }
 
 func (p *Parser) GetOutBoundLinks(targetURL string) ([]string, error) {
@@ -117,8 +130,6 @@ func (p *Parser) Parse(targetURL string) (models.PageData, error) {
 }
 
 func (p *Parser) FetchStatic(targetURL string) (io.ReadCloser, int, error) {
-	client := http.Client{Timeout: 10 * time.Second}
-
 	req, err := http.NewRequest("GET", targetURL, nil)
 	if err != nil {
 		return nil, 0, err
@@ -126,7 +137,7 @@ func (p *Parser) FetchStatic(targetURL string) (io.ReadCloser, int, error) {
 
 	req.Header.Set("User-Agent", p.UserAgent)
 
-	resp, err := client.Do(req)
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -241,7 +252,7 @@ func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
 
 		// 2. Add "Human Jitter" (Small pauses)
 		// Humans don't click instantly. They hover, then click.
-		chromedp.Sleep(time.Duration(rand.Intn(1000)+500)*time.Millisecond),
+		chromedp.Sleep(time.Duration(rand.Intn(300)+100)*time.Millisecond),
 
 		// 3. Scroll randomly (Reading behavior)
 		chromedp.ActionFunc(func(c context.Context) error {
@@ -251,7 +262,7 @@ func (p *Parser) FetchDynamic(targetURL string) (io.ReadCloser, int, error) {
 			return err
 		}),
 
-		chromedp.Sleep(2*time.Second),
+		chromedp.Sleep(500*time.Millisecond),
 
 		chromedp.Evaluate(`document.title`, &pageTitle),
 		chromedp.Evaluate(`document.body.innerText.substring(0, 150).replace(/\n/g, " ")`, &pageText),
@@ -284,23 +295,23 @@ func (p *Parser) decideAction(html []byte, statusCode int) FetchAction {
 
 	s := string(html)
 
-	// 2. Hard Failures (Explicit "Enable JS" or Bot Checks)
-	// These mean the domain is hostile to static crawlers.
+	// 2. Hard Failures — explicit machine-readable signals that JS is required.
+	// Must be unambiguous; we don't want to send to Chrome on a hunch.
 	if strings.Contains(s, "challenge-platform") ||
-		strings.Contains(s, "Cloudflare") ||
 		strings.Contains(s, "You need to enable JavaScript") ||
-		strings.Contains(s, "This site requires Javascript") {
+		strings.Contains(s, "This site requires Javascript") ||
+		strings.Contains(s, "enable JavaScript to continue") {
 		return ActionMarkDynamic
 	}
 
-	// 3. Soft Failures (Suspiciously Empty)
-	// This might just be a glitch or a specific page structure.
-	// We retry this request, but we don't condemn the whole domain yet.
-	if len(s) < 500 {
+	// 3. Soft Failure — only for a near-empty body (likely a blank shell loaded by JS).
+	// 150 chars can barely hold a <html><body></body></html> skeleton; anything
+	// larger is real content and we accept it as-is.
+	if len(s) < 150 {
 		return ActionRetryOneOff
 	}
 
-	// 4. Success
+	// 4. Success — use whatever static gave us.
 	return ActionUseStatic
 }
 
